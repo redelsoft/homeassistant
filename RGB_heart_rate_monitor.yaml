@@ -1,0 +1,170 @@
+script:
+	heart_rate_led_indicator:
+	alias: Heart rate LED indicator
+	mode: restart
+	description: Turn Ikea LED Strip green/yellow/red based on real-time heart rate.
+	sequence:
+		- variables:
+			hr_entity: sensor.sensor.seeed_studio_mr60bha2_kit_614adc_real_time_heart_rate
+			led_entity: light.ikea_led_strip
+			hr: "{{ states(hr_entity) | float(0) }}"
+	
+		# Only act when a "heartbeat is detected" (i.e., we have a sane, positive BPM)
+		- condition: template
+		value_template: "{{ hr > 0 }}"
+	
+		- choose:
+			# Green: 60–99
+			- conditions:
+				- condition: template
+				value_template: "{{ hr >= 60 and hr <= 99 }}"
+			sequence:
+				- service: light.turn_on
+				target:
+					entity_id: "{{ led_entity }}"
+				data:
+					rgb_color: [0, 255, 0]
+					brightness: 255
+	
+			# Yellow: 100–120
+			- conditions:
+				- condition: template
+				value_template: "{{ hr >= 100 and hr <= 120 }}"
+			sequence:
+				- service: light.turn_on
+				target:
+					entity_id: "{{ led_entity }}"
+				data:
+					rgb_color: [255, 255, 0]
+					brightness: 255
+	
+			# Red: >120
+			- conditions:
+				- condition: template
+				value_template: "{{ hr > 120 }}"
+			sequence:
+				- service: light.turn_on
+				target:
+					entity_id: "{{ led_entity }}"
+				data:
+					rgb_color: [255, 0, 0]
+					brightness: 255
+	
+		# Optional: if hr is <60 but >0, still turn it green (or change as you prefer)
+		default:
+			- service: light.turn_on
+			target:
+				entity_id: "{{ led_entity }}"
+			data:
+				rgb_color: [0, 255, 0]
+				brightness: 255
+				
+	heart_rate_led_indicator:
+	alias: Heart rate LED indicator
+	mode: restart
+	description: Gradient HR indicator with pulsing red for dangerous HR.
+	sequence:
+		- variables:
+			hr_entity: sensor.seeed_studio_mr60bha2_kit_614adc_real_time_heart_rate
+			led_entity: light.ikea_led_strip
+			hr: "{{ states(hr_entity) | float(0) }}"
+	
+			# Thresholds
+			min_hr: 60
+			y1_hr: 100
+			y2_hr: 120
+			max_hr: 150
+			danger_hr: 150
+	
+			# Clamp HR for gradient math (>=60 only)
+			hr_clamped: >
+			{% set v = hr | float %}
+			{% if v < min_hr %} {{ min_hr }}
+			{% elif v > max_hr %} {{ max_hr }}
+			{% else %} {{ v }}
+			{% endif %}
+	
+			# Gradient color calculation
+			rgb: >
+			{% set v = hr_clamped | float %}
+			{% if v <= y1_hr %}
+				{% set t = (v - min_hr) / (y1_hr - min_hr) %}
+				{% set r = (0   + (255 - 0)   * t) | round(0) %}
+				{% set g = 255 %}
+				{% set b = 0 %}
+				[{{ r }}, {{ g }}, {{ b }}]
+			{% elif v <= y2_hr %}
+				{% set t = (v - y1_hr) / (y2_hr - y1_hr) %}
+				{% set r = 255 %}
+				{% set g = (255 + (165 - 255) * t) | round(0) %}
+				{% set b = 0 %}
+				[{{ r }}, {{ g }}, {{ b }}]
+			{% else %}
+				{% set t = (v - y2_hr) / (max_hr - y2_hr) %}
+				{% set r = 255 %}
+				{% set g = (165 + (0 - 165) * t) | round(0) %}
+				{% set b = 0 %}
+				[{{ r }}, {{ g }}, {{ b }}]
+			{% endif %}
+	
+		# Only act when a heartbeat is detected
+		- condition: template
+		value_template: "{{ hr > 0 }}"
+	
+		- choose:
+			# Dangerous HR: pulse red
+			- conditions:
+				- condition: template
+				value_template: "{{ hr > danger_hr }}"
+			sequence:
+				- repeat:
+					while:
+					- condition: template
+						value_template: "{{ states(hr_entity) | float(0) > danger_hr }}"
+					sequence:
+					- service: light.turn_on
+						target:
+						entity_id: "{{ led_entity }}"
+						data:
+						rgb_color: [255, 0, 0]
+						brightness: 255
+	
+					- delay: "00:00:01"
+	
+					- service: light.turn_on
+						target:
+						entity_id: "{{ led_entity }}"
+						data:
+						rgb_color: [255, 0, 0]
+						brightness: 40
+	
+					- delay: "00:00:01"
+	
+		default:
+			# HR < 60 stays solid green, others use gradient
+			- service: light.turn_on
+			target:
+				entity_id: "{{ led_entity }}"
+			data:
+				rgb_color: >
+				{% if hr < min_hr %}
+					[0, 255, 0]
+				{% else %}
+					{{ rgb }}
+				{% endif %}
+				brightness: 255
+				transition: 1
+
+automation:
+- id: '1736284509123'
+  alias: Heart rate -> Ikea LED Strip color
+  mode: restart
+  trigger:
+    - platform: state
+      entity_id: sensor.seeed_studio_mr60bha2_kit_614adc_real_time_heart_rate
+  condition:
+    - condition: template
+      value_template: >
+        {{ trigger.to_state is not none and (trigger.to_state.state | float(0)) > 0 }}
+  action:
+    - service: script.heart_rate_led_indicator
