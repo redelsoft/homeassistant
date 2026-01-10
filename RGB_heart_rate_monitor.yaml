@@ -2,7 +2,7 @@ script:
 heart_rate_led_indicator:
   alias: Heart rate LED indicator
   mode: restart
-  description: Presence-gated HR gradient + pulsing red + white when no HR/low HR.
+  description: Presence-gated HR gradient + pulsing red + white when no HR/low HR + off if HR stuck 20s.
   sequence:
     - variables:
         hr_entity: sensor.seeed_studio_mr60bha2_kit_614adc_real_time_heart_rate
@@ -12,10 +12,13 @@ heart_rate_led_indicator:
         hr: "{{ states(hr_entity) | float(0) }}"
         present: "{{ is_state(presence_entity, 'on') }}"
 
+        # If HR doesn't change for this long (seconds), turn off
+        stale_seconds: 20
+
         # Thresholds
         min_hr: 60
-        y1_hr: 100
-        y2_hr: 120
+        y1_hr: 80
+        y2_hr: 100
         max_hr: 150
         danger_hr: 150
 
@@ -60,7 +63,7 @@ heart_rate_led_indicator:
               target:
                 entity_id: "{{ led_entity }}"
 
-        # 🤍 Person detected, but no heartbeat or HR below 60 -> WHITE
+        # 🤍 Person detected, but no heartbeat (<=0) OR HR below 60 -> WHITE
         - conditions:
             - condition: template
               value_template: "{{ present and (hr <= 0 or hr < min_hr) }}"
@@ -73,7 +76,7 @@ heart_rate_led_indicator:
                 brightness: 255
                 transition: 1
 
-        # 🚨 Person detected, dangerous HR -> pulse RED (and stop if presence is lost)
+        # 🚨 Person detected, dangerous HR -> pulse RED
         - conditions:
             - condition: template
               value_template: "{{ present and (hr > danger_hr) }}"
@@ -83,7 +86,8 @@ heart_rate_led_indicator:
                   - condition: template
                     value_template: >
                       {{ is_state(presence_entity, 'on')
-                         and (states(hr_entity) | float(0) > danger_hr) }}
+                         and (states(hr_entity) | float(0) > danger_hr)
+                         and ((as_timestamp(now()) - as_timestamp(states[hr_entity].last_changed)) < stale_seconds) }}
                 sequence:
                   - service: light.turn_on
                     target:
@@ -103,6 +107,20 @@ heart_rate_led_indicator:
 
                   - delay: "00:00:01"
 
+            # If we exited because HR got "stuck" for 20s, turn OFF
+            - choose:
+                - conditions:
+                    - condition: template
+                      value_template: >
+                        {{ is_state(presence_entity, 'on')
+                           and (states(hr_entity) | float(0) > 0)
+                           and (states(hr_entity) | float(0) == hr)
+                           and ((as_timestamp(now()) - as_timestamp(states[hr_entity].last_changed)) >= stale_seconds) }}
+                  sequence:
+                    - service: light.turn_off
+                      target:
+                        entity_id: "{{ led_entity }}"
+
       default:
         # ✅ Person detected + HR in 60..150 -> gradient
         - service: light.turn_on
@@ -112,6 +130,23 @@ heart_rate_led_indicator:
             rgb_color: "{{ rgb }}"
             brightness: 255
             transition: 1
+
+        # 🕒 Watchdog: if HR doesn't change for 20s, turn OFF
+        - delay:
+            seconds: "{{ stale_seconds }}"
+        - choose:
+            - conditions:
+                - condition: template
+                  value_template: >
+                    {{ is_state(presence_entity, 'on')
+                       and (states(hr_entity) | float(0) > 0)
+                       and (states(hr_entity) | float(0) == hr)
+                       and ((as_timestamp(now()) - as_timestamp(states[hr_entity].last_changed)) >= stale_seconds) }}
+              sequence:
+                - service: light.turn_off
+                  target:
+                    entity_id: "{{ led_entity }}"
+
 
 automation:
 - id: '1736284509123'
